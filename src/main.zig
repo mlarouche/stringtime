@@ -58,11 +58,8 @@ pub const StringTime = struct {
     }
 
     pub fn parse(self: *Self, template: []const u8) !void {
-        var index: usize = 0;
-
         var start_index: usize = 0;
-
-        var inside_template = false;
+        var previous_index: usize = 0;
 
         const State = enum {
             Literal,
@@ -71,37 +68,34 @@ pub const StringTime = struct {
 
         var state: State = .Literal;
 
-        while (index < template.len) {
+        var it = (try std.unicode.Utf8View.init(template)).iterator();
+
+        while (it.nextCodepointSlice()) |codepoint| {
             switch (state) {
                 .Literal => {
-                    if (template[index] == '{' and (index + 1) < template.len and template[index + 1] == '{') {
-                        if (index > start_index) {
-                            try self.commands.append(CommandKind{ .literal = template[start_index..index] });
-                        }
-
-                        start_index = index + 2;
-                        index += 2;
+                    if (std.mem.eql(u8, codepoint, "{") and std.mem.eql(u8, it.peek(1), "{")) {
+                        try self.commands.append(CommandKind{ .literal = template[start_index..previous_index] });
+                        _ = it.nextCodepointSlice();
+                        start_index = it.i;
 
                         state = .InsideTemplate;
                     } else {
-                        index += 1;
-
-                        if (index == template.len) {
-                            try self.commands.append(CommandKind{ .literal = template[start_index..index] });
+                        if (it.peek(1).len == 0) {
+                            try self.commands.append(CommandKind{ .literal = template[start_index..] });
                         }
                     }
                 },
                 .InsideTemplate => {
-                    if (template[index] == '}' and (index + 1) < template.len and template[index + 1] == '}') {
-                        try self.commands.append(CommandKind{ .substitution = .{ .variable_name = template[start_index..index] } });
-                        start_index = index + 2;
-                        index += 2;
+                    if (std.mem.eql(u8, codepoint, "}") and std.mem.eql(u8, it.peek(1), "}")) {
+                        try self.commands.append(CommandKind{ .substitution = .{ .variable_name = template[start_index..previous_index] } });
+                        _ = it.nextCodepointSlice();
+                        start_index = it.i;
                         state = .Literal;
-                    } else {
-                        index += 1;
                     }
                 },
             }
+
+            previous_index = it.i;
         }
     }
 };
@@ -212,4 +206,19 @@ test "Render C-style code properly" {
     const result = try parsed_template.render(testing.allocator, context);
     defer testing.allocator.free(result);
     testing.expectEqualStrings("fn testFunction() { std.log.info(\"Hello World!\"); }", result);
+}
+
+test "Render unicode aware" {
+    const Template = "こんにちは,{{first_name}}！Allô!";
+
+    var context = .{
+        .first_name = "Étoilé星ホシ",
+    };
+
+    const parsed_template = try StringTime.init(testing.allocator, Template);
+    defer parsed_template.deinit();
+
+    const result = try parsed_template.render(testing.allocator, context);
+    defer testing.allocator.free(result);
+    testing.expectEqualStrings("こんにちは,Étoilé星ホシ！Allô!", result);
 }
