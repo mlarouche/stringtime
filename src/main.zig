@@ -65,61 +65,41 @@ pub const StringTime = struct {
         var inside_template = false;
 
         const State = enum {
-            Select,
             Literal,
-            BeginTemplate,
             InsideTemplate,
-            EndTemplate,
         };
 
-        var state: State = .Select;
+        var state: State = .Literal;
 
         while (index < template.len) {
             switch (state) {
-                .Select => {
-                    if (template[index] == '{') {
-                        state = .BeginTemplate;
-                    } else {
-                        start_index = index;
-                        state = .Literal;
-                    }
-                },
                 .Literal => {
-                    if (template[index] == '{') {
-                        try self.commands.append(CommandKind{ .literal = template[start_index..index] });
-                        state = .BeginTemplate;
-                    }
+                    if (template[index] == '{' and (index + 1) < template.len and template[index + 1] == '{') {
+                        if (index > start_index) {
+                            try self.commands.append(CommandKind{ .literal = template[start_index..index] });
+                        }
 
-                    index += 1;
+                        start_index = index + 2;
+                        index += 2;
 
-                    if (index == template.len) {
-                        try self.commands.append(CommandKind{ .literal = template[start_index..index] });
-                    }
-                },
-                .BeginTemplate => {
-                    if (template[index] == '{') {
-                        start_index = index + 1;
                         state = .InsideTemplate;
                     } else {
-                        return error.TemplateSyntaxError;
-                    }
+                        index += 1;
 
-                    index += 1;
+                        if (index == template.len) {
+                            try self.commands.append(CommandKind{ .literal = template[start_index..index] });
+                        }
+                    }
                 },
                 .InsideTemplate => {
-                    if (template[index] == '}') {
+                    if (template[index] == '}' and (index + 1) < template.len and template[index + 1] == '}') {
                         try self.commands.append(CommandKind{ .substitution = .{ .variable_name = template[start_index..index] } });
-                        state = .EndTemplate;
+                        start_index = index + 2;
+                        index += 2;
+                        state = .Literal;
+                    } else {
+                        index += 1;
                     }
-
-                    index += 1;
-                },
-                .EndTemplate => {
-                    if (template[index] == '}') {
-                        state = .Select;
-                    }
-
-                    index += 1;
                 },
             }
         }
@@ -217,4 +197,19 @@ test "Multiple renders with different context" {
     const second_result = try parsed_template.render(testing.allocator, second_context);
     defer testing.allocator.free(second_result);
     testing.expectEqualStrings("Hi second context!", second_result);
+}
+
+test "Render C-style code properly" {
+    const Template = "fn {{fn_name}}() { std.log.info(\"Hello World!\"); }";
+
+    var context = .{
+        .fn_name = "testFunction",
+    };
+
+    const parsed_template = try StringTime.init(testing.allocator, Template);
+    defer parsed_template.deinit();
+
+    const result = try parsed_template.render(testing.allocator, context);
+    defer testing.allocator.free(result);
+    testing.expectEqualStrings("fn testFunction() { std.log.info(\"Hello World!\"); }", result);
 }
