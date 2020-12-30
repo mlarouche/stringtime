@@ -1,6 +1,6 @@
 # stringtime
 
-Zig library for string templating. 
+String template engine for Zig.
 
 ## Quick Example
 ```
@@ -14,8 +14,8 @@ Hello World {{index}}!
 ```
 
 ```
-{{ foreach(list) |item| }}
-Print {{item}}
+{{ for(list) |item, index| }}
+Print {{item}} at {{index}}
 {{ end }}
 ```
 
