@@ -7,7 +7,7 @@ const Allocator = std.mem.Allocator;
 pub const StringBuffer = struct {
     const Self = @This();
 
-    /// Content of the ArrayList
+    /// Content of the string buffer
     str: Slice,
     capacity: usize,
     allocator: *Allocator,
@@ -330,6 +330,7 @@ pub const StringTime = struct {
         var result = Self{
             .commands = CommandList.init(allocator),
         };
+        errdefer result.deinit();
 
         try result.parse(template);
 
@@ -391,6 +392,8 @@ pub const StringTime = struct {
                         start_index = it.i;
 
                         state = .InsideTemplate;
+                    } else if (std.mem.eql(u8, codepoint, "}") and std.mem.eql(u8, it.peek(1), "}")) {
+                        return error.MismatchedTemplateDelimiter;
                     } else {
                         if (it.peek(1).len == 0) {
                             try self.commands.append(CommandKind{ .literal = template[start_index..] });
@@ -398,11 +401,19 @@ pub const StringTime = struct {
                     }
                 },
                 .InsideTemplate => {
-                    if (std.mem.eql(u8, codepoint, "}") and std.mem.eql(u8, it.peek(1), "}")) {
-                        try self.commands.append(CommandKind{ .substitution = .{ .variable_name = template[start_index..previous_index] } });
-                        _ = it.nextCodepointSlice();
-                        start_index = it.i;
-                        state = .Literal;
+                    if (std.mem.eql(u8, codepoint, "}")) {
+                        if (std.mem.eql(u8, it.peek(1), "}")) {
+                            try self.commands.append(CommandKind{ .substitution = .{ .variable_name = template[start_index..previous_index] } });
+                            _ = it.nextCodepointSlice();
+                            start_index = it.i;
+                            state = .Literal;
+                        } else {
+                            return error.MismatchedTemplateDelimiter;
+                        }
+                    }
+
+                    if (it.peek(1).len == 0) {
+                        return error.MismatchedTemplateDelimiter;
                     }
                 },
             }
@@ -440,13 +451,31 @@ test "Basic substitution" {
         .name = "Zig stringtime",
     };
 
-    var template = try StringTime.init(testing.allocator, Template);
-    defer template.deinit();
+    var parsed_template = try StringTime.init(testing.allocator, Template);
+    defer parsed_template.deinit();
 
-    const result = try template.render(testing.allocator, context);
+    const result = try parsed_template.render(testing.allocator, context);
     defer result.deinit();
 
     testing.expectEqualStrings("Hi Zig stringtime!", result.str);
+}
+
+test "Malformated template delimiter" {
+    var context = .{
+        .name = "Zig stringtime",
+    };
+
+    const Inputs = [_][]const u8{
+        "Hi {{user_name}!",
+        "Hi {user_name}}!",
+        "Hi {{user_name!",
+        "Hi user_name}}!",
+    };
+
+    for (Inputs) |input| {
+        var parsed_template = StringTime.init(testing.allocator, input);
+        testing.expectError(error.MismatchedTemplateDelimiter, parsed_template);
+    }
 }
 
 test "Variable name not found error" {
@@ -533,4 +562,20 @@ test "Render unicode aware" {
     const result = try parsed_template.render(testing.allocator, context);
     defer result.deinit();
     testing.expectEqualStrings("こんにちは,Étoilé星ホシ！Allô!", result.str);
+}
+
+test "Start with template" {
+    const Template = "{{playable_character}}, you must choose wisely.";
+
+    var context = .{
+        .playable_character = "Crono",
+    };
+
+    const parsed_template = try StringTime.init(testing.allocator, Template);
+    defer parsed_template.deinit();
+
+    const result = try parsed_template.render(testing.allocator, context);
+    defer result.deinit();
+
+    testing.expectEqualStrings("Crono, you must choose wisely.", result.str);
 }
