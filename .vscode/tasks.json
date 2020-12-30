@@ -6,7 +6,7 @@
         {
             "label": "Build_Test",
             "type": "shell",
-            "command": "$outdir=zig test src/main.zig --enable-cache; mkdir -Force zig-cache/tests; cp \"$outdir\\test.exe\" -Destination \"zig-cache/tests\"",
+            "command": "$outdir=zig test tests/tests.zig --pkg-begin stringtime stringtime.zig --pkg-end --enable-cache; mkdir -Force zig-cache/tests; cp \"$outdir\\test.exe\" -Destination \"zig-cache/tests\"",
             "problemMatcher": "$gcc"
         },
         {
