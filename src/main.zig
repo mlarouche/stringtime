@@ -67,7 +67,16 @@ pub const StringTime = struct {
                     inline for (std.meta.fields(@TypeOf(context))) |field| {
                         if (std.mem.eql(u8, field.name, sub.variable_name)) {
                             const value = @field(context, field.name);
-                            try result.appendSlice(value);
+
+                            switch (@typeInfo(field.field_type)) {
+                                .Int => |int_info| {
+                                    try std.fmt.formatInt(value, 10, false, .{}, result.writer());
+                                },
+                                else => {
+                                    try result.appendSlice(value);
+                                },
+                            }
+
                             found = true;
                         }
                     }

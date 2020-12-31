@@ -183,15 +183,44 @@ test "for range loop action" {
     testing.expectEqualStrings(Expected, result.str);
 }
 
+test "Output integer in template" {
+    const Template = "i32={{signed_int}},u64={{unsigned_long}},unicode_codepoint={{codepoint}}";
+
+    const Expected = "i32=-123456,u64=987654321,unicode_codepoint=33609";
+
+    const Context = struct {
+        signed_int: i32,
+        unsigned_long: u64,
+        codepoint: u21,
+    };
+
+    var context = Context{
+        .signed_int = -123456,
+        .unsigned_long = 987654321,
+        .codepoint = '草',
+    };
+
+    const parsed_template = try StringTime.init(testing.allocator, Template);
+    defer parsed_template.deinit();
+
+    const result = try parsed_template.render(testing.allocator, context);
+    defer result.deinit();
+
+    testing.expectEqualStrings(Expected, result.str);
+}
+
 // test "for range loop with index variable" {
 //     const Template =
-//         \\{{ for(0..4) |index| }}
-//         \\Index #{{index}}
+//         \\{{ for(0..4) |index| }}Index #{{index}}
 //         \\{{ end }}
 //     ;
 
 //     const Expected =
 //         \\Index #0
+//         \\Index #1
+//         \\Index #2
+//         \\Index #3
+//         \\
 //     ;
 
 //     const parsed_template = try StringTime.init(testing.allocator, Template);
