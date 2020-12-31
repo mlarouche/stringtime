@@ -1,1 +1,1 @@
-pub const StringTime = @import("src/main.zig").StringTime;
+pub usingnamespace @import("src/main.zig");

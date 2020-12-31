@@ -1,6 +1,482 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+pub const StringTime = struct {
+    commands: CommandList,
+
+    pub const CommandKind = union(enum) {
+        literal: []const u8,
+        substitution: struct {
+            variable_name: []const u8,
+        },
+        for_range: struct {
+            times: usize,
+            command_list: CommandList,
+
+            pub fn deinit(self: @This()) void {
+                self.command_list.deinit();
+            }
+        },
+
+        pub fn deinit(self: @This()) void {
+            switch (self) {
+                .for_range => |for_range| for_range.deinit(),
+                else => {},
+            }
+        }
+    };
+    pub const CommandList = std.ArrayList(CommandKind);
+
+    const Self = @This();
+
+    pub fn init(allocator: *Allocator, template: []const u8) !Self {
+        var result = Self{
+            .commands = CommandList.init(allocator),
+        };
+        errdefer result.deinit();
+
+        try result.parse(allocator, template);
+
+        return result;
+    }
+
+    pub fn deinit(self: Self) void {
+        for (self.commands.items) |command| {
+            command.deinit();
+        }
+        self.commands.deinit();
+    }
+
+    pub fn render(self: Self, allocator: *Allocator, context: anytype) !StringBuffer {
+        var result = StringBuffer.init(allocator);
+        errdefer result.deinit();
+
+        try processCommand(self.commands, &result, context);
+
+        return result;
+    }
+
+    fn processCommand(command_list: CommandList, result: *StringBuffer, context: anytype) !void {
+        for (command_list.items) |command| {
+            switch (command) {
+                .literal => |literal| {
+                    try result.appendSlice(literal);
+                },
+                .substitution => |sub| {
+                    var found = false;
+                    inline for (std.meta.fields(@TypeOf(context))) |field| {
+                        if (std.mem.eql(u8, field.name, sub.variable_name)) {
+                            const value = @field(context, field.name);
+                            try result.appendSlice(value);
+                            found = true;
+                        }
+                    }
+
+                    if (!found) {
+                        return error.VariableNameNotFound;
+                    }
+                },
+                .for_range => |for_range| {
+                    var count: usize = 0;
+                    while (count < for_range.times) : (count += 1) {
+                        // TODO: Remove that catch unreachable workaround
+                        processCommand(for_range.command_list, result, context) catch unreachable;
+                    }
+                },
+            }
+        }
+    }
+
+    fn parse(self: *Self, allocator: *Allocator, template: []const u8) !void {
+        var start_index: usize = 0;
+        var previous_index: usize = 0;
+
+        const State = enum {
+            Literal,
+            InsideTemplate,
+        };
+
+        var command_stack = std.ArrayList(*CommandList).init(allocator);
+        defer command_stack.deinit();
+
+        try command_stack.append(&self.commands);
+
+        var state: State = .Literal;
+
+        var it = (try std.unicode.Utf8View.init(template)).iterator();
+
+        while (it.peek(1).len != 0) {
+            switch (state) {
+                .Literal => {
+                    var codepoint = it.nextCodepointSlice().?;
+
+                    if (std.mem.eql(u8, codepoint, "{") and std.mem.eql(u8, it.peek(1), "{")) {
+                        try command_stack.items[command_stack.items.len - 1].append(CommandKind{ .literal = template[start_index..previous_index] });
+                        _ = it.nextCodepointSlice();
+                        start_index = it.i;
+
+                        state = .InsideTemplate;
+                    } else if (std.mem.eql(u8, codepoint, "}") and std.mem.eql(u8, it.peek(1), "}")) {
+                        return error.MismatchedTemplateDelimiter;
+                    } else {
+                        if (it.peek(1).len == 0) {
+                            try command_stack.items[command_stack.items.len - 1].append(CommandKind{ .literal = template[start_index..] });
+                        }
+                    }
+                },
+                .InsideTemplate => {
+                    var parser = Parser.initFromIterator(it);
+
+                    var expression_opt = try parser.parse();
+
+                    if (expression_opt) |expression| {
+                        switch (expression) {
+                            .field_qualifier => |var_name| {
+                                try command_stack.items[command_stack.items.len - 1].append(CommandKind{ .substitution = .{ .variable_name = var_name } });
+                            },
+                            .for_loop => |for_expression| {
+                                switch (for_expression.expression) {
+                                    .range => |range| {
+                                        const times = range.end - range.start;
+                                        try command_stack.items[command_stack.items.len - 1].append(CommandKind{ .for_range = .{ .times = times, .command_list = CommandList.init(allocator) } });
+
+                                        const command_stack_top = &command_stack.items[command_stack.items.len - 1];
+                                        try command_stack.append(&command_stack_top.*.items[command_stack_top.*.items.len - 1].for_range.command_list);
+                                    },
+                                    else => {},
+                                }
+                            },
+                            .end => {
+                                _ = command_stack.popOrNull();
+                            },
+                        }
+                    }
+
+                    it = parser.lexer.it;
+                    start_index = it.i;
+                    state = .Literal;
+                },
+            }
+
+            previous_index = it.i;
+        }
+    }
+};
+
+pub const Lexer = struct {
+    it: std.unicode.Utf8Iterator,
+
+    pub const Token = union(enum) {
+        comma: void,
+        end: void,
+        end_template: void,
+        for_loop: void,
+        identifier: []const u8,
+        left_paren: void,
+        number: usize,
+        range: void,
+        right_paren: void,
+        vertical_line: void,
+    };
+
+    const Self = @This();
+
+    const Keywords = [_]struct {
+        keyword: []const u8,
+        token: Token,
+    }{
+        .{
+            .keyword = "for",
+            .token = Token.for_loop,
+        },
+        .{
+            .keyword = "end",
+            .token = Token.end,
+        },
+    };
+
+    pub fn init(input: []const u8) !Self {
+        return Self{
+            .it = (try std.unicode.Utf8View.init(input)).iterator(),
+        };
+    }
+
+    pub fn initFromIterator(it: std.unicode.Utf8Iterator) Self {
+        return Self{
+            .it = it,
+        };
+    }
+
+    pub fn next(self: *Self) !?Token {
+        // Eat whitespace
+        var codepoint = self.it.peek(1);
+        while (codepoint.len == 1 and std.ascii.isSpace(codepoint[0])) {
+            _ = self.it.nextCodepointSlice();
+            codepoint = self.it.peek(1);
+        }
+
+        if (std.mem.eql(u8, codepoint, "(")) {
+            _ = self.it.nextCodepointSlice();
+            return Token.left_paren;
+        } else if (std.mem.eql(u8, codepoint, ")")) {
+            _ = self.it.nextCodepointSlice();
+            return Token.right_paren;
+        } else if (std.mem.eql(u8, codepoint, "|")) {
+            _ = self.it.nextCodepointSlice();
+            return Token.vertical_line;
+        } else if (std.mem.eql(u8, codepoint, ",")) {
+            _ = self.it.nextCodepointSlice();
+            return Token.comma;
+        } else if (std.mem.eql(u8, codepoint, ".")) {
+            var peek_codepoint = self.it.peek(2);
+            if (std.mem.eql(u8, peek_codepoint, "..")) {
+                _ = self.it.nextCodepointSlice();
+                _ = self.it.nextCodepointSlice();
+                return Token.range;
+            } else {
+                return error.InvalidToken;
+            }
+        } else if (std.mem.eql(u8, codepoint, "}")) {
+            var peek_codepoint = self.it.peek(2);
+            if (std.mem.eql(u8, peek_codepoint, "}}")) {
+                _ = self.it.nextCodepointSlice();
+                _ = self.it.nextCodepointSlice();
+                return Token.end_template;
+            } else {
+                return error.MismatchedTemplateDelimiter;
+            }
+        } else if (codepoint.len == 1 and std.ascii.isDigit(codepoint[0])) {
+            var start_index: usize = self.it.i;
+
+            _ = self.it.nextCodepointSlice();
+
+            var number_codepoint = self.it.peek(1);
+            while (number_codepoint.len == 1 and std.ascii.isDigit(number_codepoint[0])) {
+                _ = self.it.nextCodepointSlice();
+                number_codepoint = self.it.peek(1);
+            }
+
+            var number_string = self.it.bytes[start_index..self.it.i];
+
+            var parsed_number: usize = try std.fmt.parseInt(usize, number_string, 10);
+
+            return Token{ .number = parsed_number };
+        } else if (codepoint.len == 1 and (std.ascii.isAlpha(codepoint[0]) or codepoint[0] == '_')) {
+            var start_index: usize = self.it.i;
+
+            _ = self.it.nextCodepointSlice();
+
+            var identifier_codepoint = self.it.peek(1);
+            while (identifier_codepoint.len == 1 and (std.ascii.isAlNum(identifier_codepoint[0]) or identifier_codepoint[0] == '_')) {
+                _ = self.it.nextCodepointSlice();
+                identifier_codepoint = self.it.peek(1);
+            }
+
+            var identifier_string = self.it.bytes[start_index..self.it.i];
+
+            for (Keywords) |keyword| {
+                if (std.mem.eql(u8, keyword.keyword, identifier_string)) {
+                    return keyword.token;
+                }
+            }
+
+            return Token{ .identifier = identifier_string };
+        } else if (codepoint.len == 1) {
+            return error.InvalidToken;
+        }
+
+        return null;
+    }
+
+    pub fn peek(self: *Self, look_ahead: usize) !?Token {
+        var backup_it = self.it;
+        defer {
+            self.it = backup_it;
+        }
+
+        var peek_token: ?Token = null;
+
+        var count: usize = 0;
+        while (count < look_ahead) : (count += 1) {
+            peek_token = try self.next();
+        }
+
+        return peek_token;
+    }
+};
+
+pub const Parser = struct {
+    lexer: Lexer,
+
+    const Expression = union(enum) {
+        end: bool,
+        field_qualifier: []const u8,
+        for_loop: struct {
+            expression: ForExpression,
+            iterator_name: ?[]const u8 = null,
+            index_name: ?[]const u8 = null,
+        },
+    };
+
+    const ForExpression = union(enum) {
+        field_qualifier: []const u8,
+        range: struct {
+            start: usize,
+            end: usize,
+        },
+    };
+
+    const Self = @This();
+
+    pub fn init(input: []const u8) !Self {
+        return Self{
+            .lexer = try Lexer.init(input),
+        };
+    }
+
+    pub fn initFromIterator(it: std.unicode.Utf8Iterator) Self {
+        return Self{
+            .lexer = Lexer.initFromIterator(it),
+        };
+    }
+
+    // Inside template grammar
+    //IDENTIFIER: [_a-zA-Z][0-9a-zA-Z_]+;
+    //NUMBER: [0-9]+
+    //
+    //root: expression '}}'
+    //    ;
+    //
+    //expression: field_qualifier
+    //    | 'for' '(' for_expression ')' ('|' IDENTIFIER (',' IDENTIFIER)* '|' )
+    //    | 'end'
+    //    ;
+    //
+    //field_qualifier:
+    //    IDENTIFIER ('.' IDENTIFIER)*
+    //    ;
+    //
+    //for_expression: field_qualifier
+    //    | NUMBER..NUMBER
+    //    ;
+    pub fn parse(self: *Self) !?Expression {
+        var peek_token_opt = try self.lexer.peek(1);
+
+        var expression: ?Expression = null;
+
+        if (peek_token_opt) |peek_token| {
+            switch (peek_token) {
+                .identifier => {
+                    if (try self.lexer.next()) |token| {
+                        expression = Expression{ .field_qualifier = token.identifier };
+                    }
+                },
+                .end => {
+                    _ = try self.lexer.next();
+                    expression = Expression{ .end = true };
+                },
+                .for_loop => {
+                    expression = try self.parseForLoop();
+                },
+                else => {
+                    return error.InvalidToken;
+                },
+            }
+
+            if (try self.lexer.next()) |next_token| {
+                if (next_token != .end_template) {
+                    return error.MismatchedTemplateDelimiter;
+                }
+            } else {
+                return error.MismatchedTemplateDelimiter;
+            }
+        }
+
+        return expression;
+    }
+
+    fn parseForLoop(self: *Self) !?Expression {
+        // Eat for token
+        _ = try self.lexer.next();
+
+        // Eat left paren
+        if (try self.lexer.peek(1)) |peek| {
+            if (peek != .left_paren) {
+                return error.ParseError;
+            }
+            _ = try self.lexer.next();
+        }
+
+        var inner_expression = try self.parseForExpression();
+
+        // Eat right paren
+        if (try self.lexer.peek(1)) |peek| {
+            if (peek != .right_paren) {
+                return error.ParseError;
+            }
+            _ = try self.lexer.next();
+        }
+
+        if (inner_expression) |inner| {
+            return Expression{
+                .for_loop = .{ .expression = inner },
+            };
+        }
+
+        return null;
+    }
+
+    fn parseForExpression(self: *Self) !?ForExpression {
+        var peek_token_opt = try self.lexer.peek(1);
+
+        if (peek_token_opt) |peek_token| {
+            switch (peek_token) {
+                .identifier => {
+                    if (try self.lexer.next()) |token| {
+                        return ForExpression{ .field_qualifier = token.identifier };
+                    }
+                },
+                .number => {
+                    var start: usize = 0;
+                    var end: usize = 0;
+
+                    if (try self.lexer.next()) |token| {
+                        start = token.number;
+                    }
+
+                    if (try self.lexer.peek(1)) |peek| {
+                        if (peek != .range) {
+                            return error.ParseError;
+                        }
+                        _ = try self.lexer.next();
+                    }
+
+                    if (try self.lexer.peek(1)) |peek| {
+                        if (peek != .number) {
+                            return error.ParseError;
+                        }
+                        if (try self.lexer.next()) |token| {
+                            end = token.number;
+                        }
+                    }
+
+                    return ForExpression{
+                        .range = .{
+                            .start = start,
+                            .end = end,
+                        },
+                    };
+                },
+                else => {
+                    return error.ParseError;
+                },
+            }
+        }
+
+        return null;
+    }
+};
+
 // Copy of std.ArrayList for now, with items renamed to str.
 // In the future, maybe it will a more optimized data structure for mutable string buffer
 pub const StringBuffer = struct {
@@ -309,115 +785,5 @@ pub const StringBuffer = struct {
     // This requires "unsafe" slicing.
     fn allocatedSlice(self: Self) Slice {
         return self.str.ptr[0..self.capacity];
-    }
-};
-
-pub const StringTime = struct {
-    commands: CommandList,
-
-    pub const CommandKind = union(enum) {
-        literal: []const u8,
-        substitution: struct {
-            variable_name: []const u8,
-        },
-    };
-    pub const CommandList = std.ArrayList(CommandKind);
-
-    const Self = @This();
-
-    pub fn init(allocator: *Allocator, template: []const u8) !Self {
-        var result = Self{
-            .commands = CommandList.init(allocator),
-        };
-        errdefer result.deinit();
-
-        try result.parse(template);
-
-        return result;
-    }
-
-    pub fn deinit(self: Self) void {
-        self.commands.deinit();
-    }
-
-    pub fn render(self: Self, allocator: *Allocator, context: anytype) !StringBuffer {
-        var result = StringBuffer.init(allocator);
-        errdefer result.deinit();
-
-        for (self.commands.items) |command| {
-            switch (command) {
-                .literal => |literal| {
-                    try result.appendSlice(literal);
-                },
-                .substitution => |sub| {
-                    var found = false;
-                    inline for (std.meta.fields(@TypeOf(context))) |field| {
-                        if (std.mem.eql(u8, field.name, sub.variable_name)) {
-                            const value = @field(context, field.name);
-                            try result.appendSlice(value);
-                            found = true;
-                        }
-                    }
-
-                    if (!found) {
-                        return error.VariableNameNotFound;
-                    }
-                },
-            }
-        }
-
-        return result;
-    }
-
-    pub fn parse(self: *Self, template: []const u8) !void {
-        var start_index: usize = 0;
-        var previous_index: usize = 0;
-
-        const State = enum {
-            Literal,
-            InsideTemplate,
-        };
-
-        var state: State = .Literal;
-
-        var it = (try std.unicode.Utf8View.init(template)).iterator();
-
-        while (it.nextCodepointSlice()) |codepoint| {
-            switch (state) {
-                .Literal => {
-                    if (std.mem.eql(u8, codepoint, "{") and std.mem.eql(u8, it.peek(1), "{")) {
-                        try self.commands.append(CommandKind{ .literal = template[start_index..previous_index] });
-                        _ = it.nextCodepointSlice();
-                        start_index = it.i;
-
-                        state = .InsideTemplate;
-                    } else if (std.mem.eql(u8, codepoint, "}") and std.mem.eql(u8, it.peek(1), "}")) {
-                        return error.MismatchedTemplateDelimiter;
-                    } else {
-                        if (it.peek(1).len == 0) {
-                            try self.commands.append(CommandKind{ .literal = template[start_index..] });
-                        }
-                    }
-                },
-                .InsideTemplate => {
-                    if (std.mem.eql(u8, codepoint, "}")) {
-                        if (std.mem.eql(u8, it.peek(1), "}")) {
-                            try self.commands.append(CommandKind{ .substitution = .{ .variable_name = template[start_index..previous_index] } });
-                            _ = it.nextCodepointSlice();
-                            start_index = it.i;
-                            state = .Literal;
-                        } else {
-                            return error.MismatchedTemplateDelimiter;
-                        }
-                    }
-
-                    if (it.peek(1).len == 0) {
-                        return error.MismatchedTemplateDelimiter;
-                    }
-                },
-            }
-
-            previous_index = it.i;
-        }
     }
 };
