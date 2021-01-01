@@ -4,7 +4,7 @@ const Allocator = std.mem.Allocator;
 pub const StringTime = struct {
     commands: CommandList,
 
-    pub const CommandKind = union(enum) {
+    const CommandKind = union(enum) {
         literal: []const u8,
         substitution: struct {
             variable_name: []const u8,
@@ -12,6 +12,7 @@ pub const StringTime = struct {
         for_range: struct {
             times: usize,
             command_list: CommandList,
+            index_name: ?[]const u8 = null,
 
             pub fn deinit(self: @This()) void {
                 self.command_list.deinit();
@@ -25,7 +26,12 @@ pub const StringTime = struct {
             }
         }
     };
-    pub const CommandList = std.ArrayList(CommandKind);
+    const CommandList = std.ArrayList(CommandKind);
+
+    const ExecutionContext = struct {
+        index_name: ?[]const u8 = null,
+        current_index: usize = 0,
+    };
 
     const Self = @This();
 
@@ -51,12 +57,14 @@ pub const StringTime = struct {
         var result = StringBuffer.init(allocator);
         errdefer result.deinit();
 
-        try processCommand(self.commands, &result, context);
+        var exec_context: ExecutionContext = .{};
+
+        try processCommand(self.commands, &result, &exec_context, context);
 
         return result;
     }
 
-    fn processCommand(command_list: CommandList, result: *StringBuffer, context: anytype) !void {
+    fn processCommand(command_list: CommandList, result: *StringBuffer, exec_context: *ExecutionContext, context: anytype) !void {
         for (command_list.items) |command| {
             switch (command) {
                 .literal => |literal| {
@@ -81,15 +89,28 @@ pub const StringTime = struct {
                         }
                     }
 
+                    if (exec_context.index_name) |index_name| {
+                        if (std.mem.eql(u8, sub.variable_name, index_name)) {
+                            try std.fmt.formatInt(exec_context.current_index, 10, false, .{}, result.writer());
+                            found = true;
+                        }
+                    }
+
                     if (!found) {
                         return error.VariableNameNotFound;
                     }
                 },
                 .for_range => |for_range| {
                     var count: usize = 0;
+                    var for_exec_context: ExecutionContext = .{
+                        .index_name = for_range.index_name,
+                    };
+
                     while (count < for_range.times) : (count += 1) {
+                        for_exec_context.current_index = count;
+
                         // TODO: Remove that catch unreachable workaround
-                        processCommand(for_range.command_list, result, context) catch unreachable;
+                        processCommand(for_range.command_list, result, &for_exec_context, context) catch unreachable;
                     }
                 },
             }
@@ -134,11 +155,13 @@ pub const StringTime = struct {
                     }
                 },
                 .InsideTemplate => {
-                    var parser = Parser.initFromIterator(it);
+                    var parser = Parser.initFromIterator(allocator, it);
 
                     var expression_opt = try parser.parse();
 
                     if (expression_opt) |expression| {
+                        defer expression.deinit();
+
                         switch (expression) {
                             .field_qualifier => |var_name| {
                                 try command_stack.items[command_stack.items.len - 1].append(CommandKind{ .substitution = .{ .variable_name = var_name } });
@@ -147,7 +170,14 @@ pub const StringTime = struct {
                                 switch (for_expression.expression) {
                                     .range => |range| {
                                         const times = range.end - range.start;
-                                        try command_stack.items[command_stack.items.len - 1].append(CommandKind{ .for_range = .{ .times = times, .command_list = CommandList.init(allocator) } });
+
+                                        var new_command = CommandKind{ .for_range = .{ .times = times, .command_list = CommandList.init(allocator) } };
+
+                                        if (for_expression.variable_captures.items.len > 0) {
+                                            new_command.for_range.index_name = for_expression.variable_captures.items[0];
+                                        }
+
+                                        try command_stack.items[command_stack.items.len - 1].append(new_command);
 
                                         const command_stack_top = &command_stack.items[command_stack.items.len - 1];
                                         try command_stack.append(&command_stack_top.*.items[command_stack_top.*.items.len - 1].for_range.command_list);
@@ -316,15 +346,24 @@ pub const Lexer = struct {
 
 pub const Parser = struct {
     lexer: Lexer,
+    allocator: *Allocator,
 
     const Expression = union(enum) {
         end: bool,
         field_qualifier: []const u8,
         for_loop: struct {
             expression: ForExpression,
-            iterator_name: ?[]const u8 = null,
-            index_name: ?[]const u8 = null,
+            variable_captures: std.ArrayList([]const u8),
         },
+
+        pub fn deinit(self: @This()) void {
+            switch (self) {
+                .for_loop => |for_loop| {
+                    for_loop.variable_captures.deinit();
+                },
+                else => {},
+            }
+        }
     };
 
     const ForExpression = union(enum) {
@@ -337,15 +376,17 @@ pub const Parser = struct {
 
     const Self = @This();
 
-    pub fn init(input: []const u8) !Self {
+    pub fn init(allocator: *Allocator, input: []const u8) !Self {
         return Self{
             .lexer = try Lexer.init(input),
+            .allocator = allocator,
         };
     }
 
-    pub fn initFromIterator(it: std.unicode.Utf8Iterator) Self {
+    pub fn initFromIterator(allocator: *Allocator, it: std.unicode.Utf8Iterator) Self {
         return Self{
             .lexer = Lexer.initFromIterator(it),
+            .allocator = allocator,
         };
     }
 
@@ -372,7 +413,6 @@ pub const Parser = struct {
         var peek_token_opt = try self.lexer.peek(1);
 
         var expression: ?Expression = null;
-
         if (peek_token_opt) |peek_token| {
             switch (peek_token) {
                 .identifier => {
@@ -426,9 +466,46 @@ pub const Parser = struct {
             _ = try self.lexer.next();
         }
 
+        var variable_captures = std.ArrayList([]const u8).init(self.allocator);
+        errdefer variable_captures.deinit();
+
+        // Check if the variable capture section is present
+        if (try self.lexer.peek(1)) |peek| {
+            if (peek == .vertical_line) {
+                _ = try self.lexer.next();
+
+                var peek2 = try self.lexer.peek(1);
+
+                while (peek2 != null and peek2.? != .vertical_line) {
+                    if (peek2.? != .identifier) {
+                        return error.ParseError;
+                    }
+
+                    if (try self.lexer.next()) |token| {
+                        try variable_captures.append(token.identifier);
+                    }
+
+                    if (try self.lexer.peek(1)) |peek3| {
+                        if (peek3 == .comma) {
+                            _ = try self.lexer.next();
+                        }
+                    }
+
+                    peek2 = try self.lexer.peek(1);
+                }
+
+                if (peek2 != null and peek2.? == .vertical_line) {
+                    _ = try self.lexer.next();
+                }
+            }
+        }
+
         if (inner_expression) |inner| {
             return Expression{
-                .for_loop = .{ .expression = inner },
+                .for_loop = .{
+                    .expression = inner,
+                    .variable_captures = variable_captures,
+                },
             };
         }
 

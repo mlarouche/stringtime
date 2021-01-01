@@ -209,28 +209,28 @@ test "Output integer in template" {
     testing.expectEqualStrings(Expected, result.str);
 }
 
-// test "for range loop with index variable" {
-//     const Template =
-//         \\{{ for(0..4) |index| }}Index #{{index}}
-//         \\{{ end }}
-//     ;
+test "for range loop with index variable" {
+    const Template =
+        \\{{ for(0..4) |i| }}Index #{{i}}
+        \\{{ end }}
+    ;
 
-//     const Expected =
-//         \\Index #0
-//         \\Index #1
-//         \\Index #2
-//         \\Index #3
-//         \\
-//     ;
+    const Expected =
+        \\Index #0
+        \\Index #1
+        \\Index #2
+        \\Index #3
+        \\
+    ;
 
-//     const parsed_template = try StringTime.init(testing.allocator, Template);
-//     defer parsed_template.deinit();
+    const parsed_template = try StringTime.init(testing.allocator, Template);
+    defer parsed_template.deinit();
 
-//     const result = try parsed_template.render(testing.allocator, .{});
-//     defer result.deinit();
+    const result = try parsed_template.render(testing.allocator, .{});
+    defer result.deinit();
 
-//     testing.expectEqualStrings(Expected, result.str);
-// }
+    testing.expectEqualStrings(Expected, result.str);
+}
 
 // test "foreach loop" {
 //     const Template =

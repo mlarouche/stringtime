@@ -169,13 +169,15 @@ test "Error lexing invalid_token" {
 test "Parse field qualifier expression" {
     const Input = "first_name \t\r\n}}";
 
-    var parser = try Parser.init(Input);
+    var parser = try Parser.init(testing.allocator, Input);
 
     var result_opt = try parser.parse();
 
     testing.expect(result_opt != null);
 
     if (result_opt) |result| {
+        defer result.deinit();
+
         testing.expect(result == .field_qualifier);
 
         testing.expectEqualStrings("first_name", result.field_qualifier);
@@ -185,13 +187,15 @@ test "Parse field qualifier expression" {
 test "Parse end statement" {
     const Input = "end}}";
 
-    var parser = try Parser.init(Input);
+    var parser = try Parser.init(testing.allocator, Input);
 
     var result_opt = try parser.parse();
 
     testing.expect(result_opt != null);
 
     if (result_opt) |result| {
+        defer result.deinit();
+
         testing.expect(result == .end);
     }
 }
@@ -199,13 +203,15 @@ test "Parse end statement" {
 test "Parse for range loop" {
     const Input = "for (0..4) }}";
 
-    var parser = try Parser.init(Input);
+    var parser = try Parser.init(testing.allocator, Input);
 
     var result_opt = try parser.parse();
 
     testing.expect(result_opt != null);
 
     if (result_opt) |result| {
+        defer result.deinit();
+
         testing.expect(result == .for_loop);
 
         testing.expect(result.for_loop.expression == .range);
@@ -218,7 +224,7 @@ test "Parse for range loop" {
 test "Error on missing terminator" {
     const Input = "for (0..4)";
 
-    var parser = try Parser.init(Input);
+    var parser = try Parser.init(testing.allocator, Input);
 
     var result_opt = parser.parse();
 
@@ -228,7 +234,7 @@ test "Error on missing terminator" {
 test "Error on missing end of range" {
     const Input = "for (0..) }}";
 
-    var parser = try Parser.init(Input);
+    var parser = try Parser.init(testing.allocator, Input);
 
     var result_opt = parser.parse();
 
@@ -238,7 +244,7 @@ test "Error on missing end of range" {
 test "Error on missing right parenthesis" {
     const Input = "for (0..4 }}";
 
-    var parser = try Parser.init(Input);
+    var parser = try Parser.init(testing.allocator, Input);
 
     var result_opt = parser.parse();
 
@@ -248,7 +254,41 @@ test "Error on missing right parenthesis" {
 test "Error on missing left parenthesis" {
     const Input = "for 0..4) }}";
 
-    var parser = try Parser.init(Input);
+    var parser = try Parser.init(testing.allocator, Input);
+
+    var result_opt = parser.parse();
+
+    testing.expectError(error.ParseError, result_opt);
+}
+
+test "Parse variable capture" {
+    const Input = "for (0..4) |patate| }}";
+
+    var parser = try Parser.init(testing.allocator, Input);
+
+    var result_opt = try parser.parse();
+
+    testing.expect(result_opt != null);
+
+    if (result_opt) |result| {
+        defer result.deinit();
+
+        testing.expect(result == .for_loop);
+
+        testing.expect(result.for_loop.expression == .range);
+
+        testing.expectEqual(@as(usize, 0), result.for_loop.expression.range.start);
+        testing.expectEqual(@as(usize, 4), result.for_loop.expression.range.end);
+
+        testing.expectEqual(@as(usize, 1), result.for_loop.variable_captures.items.len);
+        testing.expectEqualStrings("patate", result.for_loop.variable_captures.items[0]);
+    }
+}
+
+test "Error on missing right vertical line in variable capture" {
+    const Input = "for (0..4) |patate }}";
+
+    var parser = try Parser.init(testing.allocator, Input);
 
     var result_opt = parser.parse();
 
