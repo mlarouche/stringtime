@@ -209,6 +209,72 @@ test "Output integer in template" {
     testing.expectEqualStrings(Expected, result.str);
 }
 
+test "Output bool in template" {
+    const Template = "first={{first}},second={{second}}";
+
+    const Expected = "first=true,second=false";
+
+    var context = .{
+        .first = true,
+        .second = false,
+    };
+
+    const parsed_template = try StringTime.init(testing.allocator, Template);
+    defer parsed_template.deinit();
+
+    const result = try parsed_template.render(testing.allocator, context);
+    defer result.deinit();
+
+    testing.expectEqualStrings(Expected, result.str);
+}
+
+test "Output float in template" {
+    const Template = "pi={{pi}},tau={{tau}}";
+
+    const Expected = "pi=3.141592653589793e+00,tau=6.283185307179586e+00";
+
+    var context = .{
+        .pi = std.math.pi,
+        .tau = std.math.tau,
+    };
+
+    const parsed_template = try StringTime.init(testing.allocator, Template);
+    defer parsed_template.deinit();
+
+    const result = try parsed_template.render(testing.allocator, context);
+    defer result.deinit();
+
+    testing.expectEqualStrings(Expected, result.str);
+}
+
+test "Output enum in template" {
+    const Template = "Crono={{crono}}, Marle={{marle}}, Lucca={{lucca}}, Magus={{magus}}";
+
+    const Expected = "Crono=Lightning, Marle=Water, Lucca=Fire, Magus=Shadow";
+
+    const Magic = enum {
+        Lightning,
+        Water,
+        Fire,
+        Shadow,
+    };
+
+    var context = .{
+        .crono = Magic.Lightning,
+        .marle = Magic.Water,
+        .lucca = Magic.Fire,
+        .magus = Magic.Shadow,
+    };
+
+    const parsed_template = try StringTime.init(testing.allocator, Template);
+    defer parsed_template.deinit();
+
+    const result = try parsed_template.render(testing.allocator, context);
+    defer result.deinit();
+
+    testing.expectEqualStrings(Expected, result.str);
+}
+
 test "for range loop with index variable" {
     const Template =
         \\{{ for(0..4) |i| }}Index #{{i}}

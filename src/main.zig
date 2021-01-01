@@ -81,24 +81,13 @@ pub const StringTime = struct {
         const ValuePrint = struct {
             fn print(value: anytype, result_buffer: *StringBuffer) !void {
                 switch (@typeInfo(@TypeOf(value))) {
-                    .Int => |int_info| {
-                        try std.fmt.formatInt(value, 10, false, .{}, result_buffer.writer());
+                    .Enum => {
+                        try result_buffer.appendSlice(@tagName(value));
                     },
-                    .Array => {},
                     else => {
-                        try result_buffer.appendSlice(value);
+                        try std.fmt.formatType(value, "", .{}, result_buffer.writer(), std.fmt.default_max_depth);
                     },
                 }
-            }
-
-            fn findValue(field_name: []const u8) anytype {
-                inline for (std.meta.fields(@TypeOf(context))) |field| {
-                    if (std.mem.eql(u8, field.name, sub.variable_name)) {
-                        return @field(context, field.name);
-                    }
-                }
-
-                return null;
             }
         };
 
@@ -108,36 +97,33 @@ pub const StringTime = struct {
                     try result.appendSlice(literal);
                 },
                 .substitution => |sub| {
-                    const test_Value = ValuePrint.findValue(sub.variable_name);
-                    try ValuePrint.print(test_value, result);
+                    var found = false;
+                    inline for (std.meta.fields(@TypeOf(context))) |field| {
+                        if (std.mem.eql(u8, field.name, sub.variable_name)) {
+                            const value = @field(context, field.name);
 
-                    // var found = false;
-                    // inline for (std.meta.fields(@TypeOf(context))) |field| {
-                    //     if (std.mem.eql(u8, field.name, sub.variable_name)) {
-                    //         const value = @field(context, field.name);
+                            try ValuePrint.print(value, result);
 
-                    //         try ValuePrint.print(value, result);
+                            found = true;
+                        }
 
-                    //         found = true;
-                    //     }
+                        if (exec_context.list_name) |list_name| {
+                            if (exec_context.item_name) |item_name| {
+                                if (std.mem.eql(u8, sub.variable_name, item_name)) {
+                                    if (std.mem.eql(u8, field.name, list_name)) {
+                                        if (@typeInfo(field.field_type) == .Array) {
+                                            const list_instance = @field(context, field.name);
+                                            const list_value = list_instance[exec_context.current_index];
 
-                    //     if (exec_context.list_name) |list_name| {
-                    //         if (exec_context.item_name) |item_name| {
-                    //             if (std.mem.eql(u8, sub.variable_name, item_name)) {
-                    //                 if (std.mem.eql(u8, field.name, list_name)) {
-                    //                     if (@typeInfo(field.field_type) == .Array) {
-                    //                         const list_instance = @field(context, field.name);
-                    //                         const list_value = list_instance[exec_context.current_index];
+                                            try ValuePrint.print(list_value, result);
 
-                    //                         try ValuePrint.print(list_value, result);
-
-                    //                         found = true;
-                    //                     }
-                    //                 }
-                    //             }
-                    //         }
-                    //     }
-                    // }
+                                            found = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     if (exec_context.index_name) |index_name| {
                         if (std.mem.eql(u8, sub.variable_name, index_name)) {
