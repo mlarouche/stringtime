@@ -232,46 +232,62 @@ test "for range loop with index variable" {
     testing.expectEqualStrings(Expected, result.str);
 }
 
-// test "foreach loop" {
-//     const Template =
-//         \\{{ for(list) |item| }}
-//         \\<li>{{item}}</li>
-//         \\{{ end }}
-//     ;
+test "foreach loop with static array of strings " {
+    const Template =
+        \\{{ for(list) |item| }}<li>{{item}}</li>
+        \\{{ end }}
+    ;
 
-//     const Expected =
-//         \\<li>First</li>
-//         \\<li>Second</li>
-//         \\<li>Third</li>
-//     ;
+    const Expected =
+        \\<li>First</li>
+        \\<li>Second</li>
+        \\<li>Third</li>
+        \\
+    ;
 
-//     const parsed_template = try StringTime.init(testing.allocator, Template);
-//     defer parsed_template.deinit();
+    var context = .{
+        .list = [_][]const u8{
+            "First",
+            "Second",
+            "Third",
+        },
+    };
 
-//     const result = try parsed_template.render(testing.allocator, .{});
-//     defer result.deinit();
+    const parsed_template = try StringTime.init(testing.allocator, Template);
+    defer parsed_template.deinit();
 
-//     testing.expectEqualStrings(Expected, result.str);
-// }
+    const result = try parsed_template.render(testing.allocator, context);
+    defer result.deinit();
 
-// test "foreach loop with index" {
-//     const Template =
-//         \\{{ for(list) |item, i| }}
-//         \\<li>{{item}} at index {{i}}</li>
-//         \\{{ end }}
-//     ;
+    testing.expectEqualStrings(Expected, result.str);
+}
 
-//     const Expected =
-//         \\<li>First at index 0</li>
-//         \\<li>Second at index 1</li>
-//         \\<li>Third at index 2</li>
-//     ;
+test "foreach loop with index" {
+    const Template =
+        \\{{ for(list) |item, i| }}<li>{{item}} at index {{i}}</li>
+        \\{{ end }}
+    ;
 
-//     const parsed_template = try StringTime.init(testing.allocator, Template);
-//     defer parsed_template.deinit();
+    const Expected =
+        \\<li>First at index 0</li>
+        \\<li>Second at index 1</li>
+        \\<li>Third at index 2</li>
+        \\
+    ;
 
-//     const result = try parsed_template.render(testing.allocator, .{});
-//     defer result.deinit();
+    var context = .{
+        .list = [_][]const u8{
+            "First",
+            "Second",
+            "Third",
+        },
+    };
 
-//     testing.expectEqualStrings(Expected, result.str);
-// }
+    const parsed_template = try StringTime.init(testing.allocator, Template);
+    defer parsed_template.deinit();
+
+    const result = try parsed_template.render(testing.allocator, context);
+    defer result.deinit();
+
+    testing.expectEqualStrings(Expected, result.str);
+}

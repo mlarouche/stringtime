@@ -294,3 +294,26 @@ test "Error on missing right vertical line in variable capture" {
 
     testing.expectError(error.ParseError, result_opt);
 }
+
+test " Parse foreach loop" {
+    const Input = "for (list) |item| }}";
+
+    var parser = try Parser.init(testing.allocator, Input);
+
+    var result_opt = try parser.parse();
+
+    testing.expect(result_opt != null);
+
+    if (result_opt) |result| {
+        defer result.deinit();
+
+        testing.expect(result == .for_loop);
+
+        testing.expect(result.for_loop.expression == .field_qualifier);
+
+        testing.expectEqualStrings("list", result.for_loop.expression.field_qualifier);
+
+        testing.expectEqual(@as(usize, 1), result.for_loop.variable_captures.items.len);
+        testing.expectEqualStrings("item", result.for_loop.variable_captures.items[0]);
+    }
+}

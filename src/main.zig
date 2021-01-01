@@ -18,10 +18,21 @@ pub const StringTime = struct {
                 self.command_list.deinit();
             }
         },
+        foreach: struct {
+            list_name: []const u8,
+            item_name: []const u8,
+            index_name: ?[]const u8 = null,
+            command_list: CommandList,
+
+            pub fn deinit(self: @This()) void {
+                self.command_list.deinit();
+            }
+        },
 
         pub fn deinit(self: @This()) void {
             switch (self) {
                 .for_range => |for_range| for_range.deinit(),
+                .foreach => |foreach| foreach.deinit(),
                 else => {},
             }
         }
@@ -30,6 +41,8 @@ pub const StringTime = struct {
 
     const ExecutionContext = struct {
         index_name: ?[]const u8 = null,
+        item_name: ?[]const u8 = null,
+        list_name: ?[]const u8 = null,
         current_index: usize = 0,
     };
 
@@ -65,29 +78,66 @@ pub const StringTime = struct {
     }
 
     fn processCommand(command_list: CommandList, result: *StringBuffer, exec_context: *ExecutionContext, context: anytype) !void {
+        const ValuePrint = struct {
+            fn print(value: anytype, result_buffer: *StringBuffer) !void {
+                switch (@typeInfo(@TypeOf(value))) {
+                    .Int => |int_info| {
+                        try std.fmt.formatInt(value, 10, false, .{}, result_buffer.writer());
+                    },
+                    .Array => {},
+                    else => {
+                        try result_buffer.appendSlice(value);
+                    },
+                }
+            }
+
+            fn findValue(field_name: []const u8) anytype {
+                inline for (std.meta.fields(@TypeOf(context))) |field| {
+                    if (std.mem.eql(u8, field.name, sub.variable_name)) {
+                        return @field(context, field.name);
+                    }
+                }
+
+                return null;
+            }
+        };
+
         for (command_list.items) |command| {
             switch (command) {
                 .literal => |literal| {
                     try result.appendSlice(literal);
                 },
                 .substitution => |sub| {
-                    var found = false;
-                    inline for (std.meta.fields(@TypeOf(context))) |field| {
-                        if (std.mem.eql(u8, field.name, sub.variable_name)) {
-                            const value = @field(context, field.name);
+                    const test_Value = ValuePrint.findValue(sub.variable_name);
+                    try ValuePrint.print(test_value, result);
 
-                            switch (@typeInfo(field.field_type)) {
-                                .Int => |int_info| {
-                                    try std.fmt.formatInt(value, 10, false, .{}, result.writer());
-                                },
-                                else => {
-                                    try result.appendSlice(value);
-                                },
-                            }
+                    // var found = false;
+                    // inline for (std.meta.fields(@TypeOf(context))) |field| {
+                    //     if (std.mem.eql(u8, field.name, sub.variable_name)) {
+                    //         const value = @field(context, field.name);
 
-                            found = true;
-                        }
-                    }
+                    //         try ValuePrint.print(value, result);
+
+                    //         found = true;
+                    //     }
+
+                    //     if (exec_context.list_name) |list_name| {
+                    //         if (exec_context.item_name) |item_name| {
+                    //             if (std.mem.eql(u8, sub.variable_name, item_name)) {
+                    //                 if (std.mem.eql(u8, field.name, list_name)) {
+                    //                     if (@typeInfo(field.field_type) == .Array) {
+                    //                         const list_instance = @field(context, field.name);
+                    //                         const list_value = list_instance[exec_context.current_index];
+
+                    //                         try ValuePrint.print(list_value, result);
+
+                    //                         found = true;
+                    //                     }
+                    //                 }
+                    //             }
+                    //         }
+                    //     }
+                    // }
 
                     if (exec_context.index_name) |index_name| {
                         if (std.mem.eql(u8, sub.variable_name, index_name)) {
@@ -111,6 +161,29 @@ pub const StringTime = struct {
 
                         // TODO: Remove that catch unreachable workaround
                         processCommand(for_range.command_list, result, &for_exec_context, context) catch unreachable;
+                    }
+                },
+                .foreach => |foreach| {
+                    var count: usize = 0;
+                    var for_exec_context: ExecutionContext = .{
+                        .item_name = foreach.item_name,
+                        .index_name = foreach.index_name,
+                        .list_name = foreach.list_name,
+                    };
+
+                    inline for (std.meta.fields(@TypeOf(context))) |field| {
+                        if (std.mem.eql(u8, field.name, foreach.list_name)) {
+                            if (@typeInfo(field.field_type) == .Array) {
+                                const list_instance = @field(context, field.name);
+
+                                while (count < list_instance.len) : (count += 1) {
+                                    for_exec_context.current_index = count;
+
+                                    // TODO: Remove that catch unreachable workaround
+                                    processCommand(foreach.command_list, result, &for_exec_context, context) catch unreachable;
+                                }
+                            }
+                        }
                     }
                 },
             }
@@ -168,6 +241,28 @@ pub const StringTime = struct {
                             },
                             .for_loop => |for_expression| {
                                 switch (for_expression.expression) {
+                                    .field_qualifier => |field| {
+                                        if (for_expression.variable_captures.items.len < 0) {
+                                            return error.NoItemVariableCapture;
+                                        }
+
+                                        var new_command = CommandKind{
+                                            .foreach = .{
+                                                .list_name = field,
+                                                .item_name = for_expression.variable_captures.items[0],
+                                                .command_list = CommandList.init(allocator),
+                                            },
+                                        };
+
+                                        if (for_expression.variable_captures.items.len > 1) {
+                                            new_command.foreach.index_name = for_expression.variable_captures.items[1];
+                                        }
+
+                                        try command_stack.items[command_stack.items.len - 1].append(new_command);
+
+                                        const command_stack_top = &command_stack.items[command_stack.items.len - 1];
+                                        try command_stack.append(&command_stack_top.*.items[command_stack_top.*.items.len - 1].foreach.command_list);
+                                    },
                                     .range => |range| {
                                         const times = range.end - range.start;
 
@@ -182,7 +277,6 @@ pub const StringTime = struct {
                                         const command_stack_top = &command_stack.items[command_stack.items.len - 1];
                                         try command_stack.append(&command_stack_top.*.items[command_stack_top.*.items.len - 1].for_range.command_list);
                                     },
-                                    else => {},
                                 }
                             },
                             .end => {
