@@ -84,6 +84,36 @@ pub const StringTime = struct {
                     .Enum => {
                         try result_buffer.appendSlice(@tagName(value));
                     },
+                    .Array => |array_info| {
+                        if (array_info.child == u8) {
+                            try std.fmt.formatType(value, "s", .{}, result_buffer.writer(), std.fmt.default_max_depth);
+                        } else {
+                            try std.fmt.formatType(value, "", .{}, result_buffer.writer(), std.fmt.default_max_depth);
+                        }
+                    },
+                    .Pointer => |ptr_info| {
+                        switch (ptr_info.size) {
+                            .One => switch (@typeInfo(ptr_info.child)) {
+                                .Array => |info| {
+                                    if (info.child == u8) {
+                                        try std.fmt.formatType(value, "s", .{}, result_buffer.writer(), std.fmt.default_max_depth);
+                                    } else {
+                                        try std.fmt.formatType(value, "", .{}, result_buffer.writer(), std.fmt.default_max_depth);
+                                    }
+                                },
+                                else => {
+                                    try std.fmt.formatType(value, "", .{}, result_buffer.writer(), std.fmt.default_max_depth);
+                                },
+                            },
+                            .Many, .C, .Slice => {
+                                if (ptr_info.child == u8) {
+                                    try std.fmt.formatType(value, "s", .{}, result_buffer.writer(), std.fmt.default_max_depth);
+                                } else {
+                                    try std.fmt.formatType(value, "", .{}, result_buffer.writer(), std.fmt.default_max_depth);
+                                }
+                            },
+                        }
+                    },
                     else => {
                         try std.fmt.formatType(value, "", .{}, result_buffer.writer(), std.fmt.default_max_depth);
                     },
@@ -287,6 +317,7 @@ pub const Lexer = struct {
 
     pub const Token = union(enum) {
         comma: void,
+        dot: void,
         end: void,
         end_template: void,
         for_loop: void,
@@ -353,7 +384,8 @@ pub const Lexer = struct {
                 _ = self.it.nextCodepointSlice();
                 return Token.range;
             } else {
-                return error.InvalidToken;
+                _ = self.it.nextCodepointSlice();
+                return Token.dot;
             }
         } else if (std.mem.eql(u8, codepoint, "}")) {
             var peek_codepoint = self.it.peek(2);
@@ -496,9 +528,7 @@ pub const Parser = struct {
         if (peek_token_opt) |peek_token| {
             switch (peek_token) {
                 .identifier => {
-                    if (try self.lexer.next()) |token| {
-                        expression = Expression{ .field_qualifier = token.identifier };
-                    }
+                    expression = try self.parseFieldQualifier();
                 },
                 .end => {
                     _ = try self.lexer.next();
@@ -522,6 +552,37 @@ pub const Parser = struct {
         }
 
         return expression;
+    }
+
+    fn parseFieldQualifier(self: *Self) !?Expression {
+        var start_index = self.lexer.it.i;
+
+        // Eat identifier token
+        _ = try self.lexer.next();
+
+        var peek = try self.lexer.peek(1);
+
+        while (peek != null and peek.? == .dot) {
+            // Eat the dot
+            _ = try self.lexer.next();
+
+            if (try self.lexer.peek(1)) |peek2| {
+                if (peek2 != .identifier) {
+                    return error.ParseError;
+                }
+            }
+
+            // Eat the identifier
+            _ = try self.lexer.next();
+
+            peek = try self.lexer.peek(1);
+        }
+
+        var end_index = self.lexer.it.i;
+
+        return Expression{
+            .field_qualifier = self.lexer.it.bytes[start_index..end_index],
+        };
     }
 
     fn parseForLoop(self: *Self) !?Expression {

@@ -13,6 +13,7 @@ test "Lex single character token" {
         .{ .input = ")", .expected = Lexer.Token.right_paren },
         .{ .input = "|", .expected = Lexer.Token.vertical_line },
         .{ .input = ",", .expected = Lexer.Token.comma },
+        .{ .input = ".", .expected = Lexer.Token.dot },
     };
 
     for (TestInput) |test_input| {
@@ -143,13 +144,6 @@ test "Lex for range loop" {
     }
 
     testing.expectEqual(Expected.len, index);
-}
-
-test "Error lexing range" {
-    var lexer = try Lexer.init(".");
-
-    var token_opt = lexer.next();
-    testing.expectError(error.InvalidToken, token_opt);
 }
 
 test "Error lexing end_template" {
@@ -295,7 +289,7 @@ test "Error on missing right vertical line in variable capture" {
     testing.expectError(error.ParseError, result_opt);
 }
 
-test " Parse foreach loop" {
+test "Parse foreach loop" {
     const Input = "for (list) |item| }}";
 
     var parser = try Parser.init(testing.allocator, Input);
@@ -315,5 +309,32 @@ test " Parse foreach loop" {
 
         testing.expectEqual(@as(usize, 1), result.for_loop.variable_captures.items.len);
         testing.expectEqualStrings("item", result.for_loop.variable_captures.items[0]);
+    }
+}
+
+test "Parse fully qualified struct field access" {
+    const TestInput = [_]struct {
+        input: []const u8,
+        expected: []const u8,
+    }{
+        .{ .input = "name }}", .expected = "name" },
+        .{ .input = "blog.title }}", .expected = "blog.title" },
+        .{ .input = "blog.date.created }}", .expected = "blog.date.created" },
+        .{ .input = "blog.date.start.current }}", .expected = "blog.date.start.current" },
+    };
+
+    for (TestInput) |entry| {
+        var parser = try Parser.init(testing.allocator, entry.input);
+
+        var result_opt = try parser.parse();
+        testing.expect(result_opt != null);
+
+        if (result_opt) |result| {
+            defer result.deinit();
+
+            testing.expect(result == .field_qualifier);
+
+            testing.expectEqualStrings(entry.expected, result.field_qualifier);
+        }
     }
 }
